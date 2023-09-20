@@ -2,6 +2,7 @@ library(tidyverse)
 library(vroom)
 library(tidymodels)
 library(poissonreg)
+library(glmnet)
 
 bike <- vroom("./STAT\ 348/KaggleBikeShare/train.csv")
 bike
@@ -26,6 +27,9 @@ bike_clean[bike_clean$weather == 4, ]["weather"] <- 3
 ggplot(bike_clean, aes(weather, count)) +
   geom_point()
 
+bike_clean <- bike_clean %>%
+  mutate(count = log(count))
+
 # feature engineering
 ## turn holiday column to a factor and remove the holiday column
 ## turn workingday column to a factor and remove the workingday column
@@ -39,14 +43,17 @@ bike_recipe <- recipe(count~., data=bike_clean) %>%
   step_mutate(holiday=factor(holiday, levels=c(0,1), labels=c("No", "Yes"))) %>%
   step_mutate(workingday=factor(workingday,levels=c(0,1), labels=c("No", "Yes"))) %>%
   step_time(datetime, features="hour") %>%
-  step_rm(datetime)
+  step_rm(datetime) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
 
 prepped_bike_recipe <- prep(bike_recipe)
 bake(prepped_bike_recipe, new_data=bike_clean)
 bake(prepped_bike_recipe, new_data=test)
+?bake
 
-model <- linear_reg() %>%
-  set_engine("lm")
+model <- linear_reg(penalty = .05, mixture = .1) %>%
+  set_engine("glmnet")
 
 bike_workflow <- workflow() %>%
   add_recipe(bike_recipe) %>%
@@ -57,7 +64,8 @@ bike_predictions <- predict(bike_workflow,
                             new_data = test)
 bike_predictions["datetime"] <- test["datetime"]
 bike_predictions <- bike_predictions %>%
-  select(c(datetime, .pred))
+  select(c(datetime, .pred)) %>%
+  mutate(.pred=exp(.pred))
 names(bike_predictions) <- c("datetime", "count")
 bike_predictions
 
@@ -71,24 +79,26 @@ extract_fit_engine(bike_workflow) %>%
 
 write.csv(bike_predictions_data_frame, "./STAT\ 348/KaggleBikeShare/predictions.csv", row.names = F)
 
-pois_mod <- poisson_reg() %>%
-  set_engine("glm")
+# Poisson regression
 
-bike_pois_workflow <- workflow() %>%
-add_recipe(bike_recipe) %>%
-add_model(pois_mod) %>%
-fit(data = bike_clean) # Fit the workflow
-
-bike_predictions_poisson <- predict(bike_pois_workflow,
-                            new_data=test) # Use fit to predict
-bike_predictions_poisson["datetime"] <- test["datetime"]
-bike_predictions_poisson <- bike_predictions_poisson %>%
-  select(c(datetime, .pred))
-names(bike_predictions_poisson) <- c("datetime", "count")
-
-bike_predictions_poisson_data_frame <- data.frame(bike_predictions_poisson)
-bike_predictions_poisson_data_frame$count[bike_predictions_poisson_data_frame$count < 0] <- 0
-bike_predictions_poisson_data_frame$count[is.na(bike_predictions_poisson_data_frame$count)] <- 0
-bike_predictions_poisson_data_frame
-
-write.csv(bike_predictions_poisson_data_frame, "./STAT\ 348/KaggleBikeShare/predictions_poisson.csv", row.names = F)
+# pois_mod <- poisson_reg() %>%
+#   set_engine("glm")
+# 
+# bike_pois_workflow <- workflow() %>%
+# add_recipe(bike_recipe) %>%
+# add_model(pois_mod) %>%
+# fit(data = bike_clean) # Fit the workflow
+# 
+# bike_predictions_poisson <- predict(bike_pois_workflow,
+#                             new_data=test) # Use fit to predict
+# bike_predictions_poisson["datetime"] <- test["datetime"]
+# bike_predictions_poisson <- bike_predictions_poisson %>%
+#   select(c(datetime, .pred))
+# names(bike_predictions_poisson) <- c("datetime", "count")
+# 
+# bike_predictions_poisson_data_frame <- data.frame(bike_predictions_poisson)
+# bike_predictions_poisson_data_frame$count[bike_predictions_poisson_data_frame$count < 0] <- 0
+# bike_predictions_poisson_data_frame$count[is.na(bike_predictions_poisson_data_frame$count)] <- 0
+# bike_predictions_poisson_data_frame
+# 
+# write.csv(bike_predictions_poisson_data_frame, "./STAT\ 348/KaggleBikeShare/predictions_poisson.csv", row.names = F)
