@@ -3,6 +3,8 @@ library(vroom)
 library(tidymodels)
 library(poissonreg)
 library(glmnet)
+library(randomForest)
+library(xgboost)
 
 bike <- vroom("./STAT\ 348/KaggleBikeShare/train.csv")
 bike
@@ -50,7 +52,6 @@ bike_recipe <- recipe(count~., data=bike_clean) %>%
 prepped_bike_recipe <- prep(bike_recipe)
 bake(prepped_bike_recipe, new_data=bike_clean)
 bake(prepped_bike_recipe, new_data=test)
-?bake
 
 model <- linear_reg(penalty = .05, mixture = .1) %>%
   set_engine("glmnet")
@@ -102,3 +103,86 @@ write.csv(bike_predictions_data_frame, "./STAT\ 348/KaggleBikeShare/predictions.
 # bike_predictions_poisson_data_frame
 # 
 # write.csv(bike_predictions_poisson_data_frame, "./STAT\ 348/KaggleBikeShare/predictions_poisson.csv", row.names = F)
+
+xgb_spec <- boost_tree(mode = "regression") %>%
+  set_engine("xgboost")
+
+# Define a workflow
+xgb_workflow <- workflow(count~.) %>%
+  add_recipe(bike_recipe) %>%
+  add_model(xgb_spec)
+
+# Fit the model
+xgb_fit <- xgb_workflow %>%
+  fit(data = bike_clean)
+
+xgb_fit
+
+predictions <- predict(xgb_fit, test)
+predictions["datetime"] <- test["datetime"]
+predictions <- predictions %>%
+  select(c(datetime, .pred)) %>%
+  mutate(.pred=exp(.pred))
+names(predictions) <- c("datetime", "count")
+predictions
+
+bike_predictions_data_frame <- data.frame(predictions)
+bike_predictions_data_frame$count[bike_predictions_data_frame$count < 0] <- 0
+bike_predictions_data_frame$count[is.na(bike_predictions_data_frame$count)] <- 0
+bike_predictions_data_frame
+write.csv(bike_predictions_data_frame, "./STAT\ 348/KaggleBikeShare/xgboost_predictions.csv", row.names = F)
+
+# 9/25 tune and fit penalized regression model
+tuning_penalized_regression_model <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+preg_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(tuning_penalized_regression_model)
+
+## Grid of values to tune over
+tuning_grid <- grid_regular(penalty(),
+                            mixture(),
+                            levels = 5) ## L^2 total tuning possibilities
+
+## Split data for CV
+folds <- vfold_cv(bike_clean, v = 5, repeats=1)
+
+## Run the CV
+CV_results <- preg_wf %>%
+tune_grid(resamples=folds,
+          grid=tuning_grid,
+          metrics=metric_set(rmse, mae)) #Or leave metrics NULL
+
+## Plot Results (example)
+collect_metrics(CV_results) %>% # Gathers metrics into DF
+  filter(.metric=="rmse") %>%
+ggplot(data=., aes(x=penalty, y=mean, color=factor(mixture))) +
+geom_line()
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+select_best("rmse")
+
+model <- linear_reg(penalty = .0000000001, mixture = .25) %>%
+  set_engine("glmnet")
+
+bike_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(model) %>%
+  fit(data = bike_clean)
+
+bike_predictions <- predict(bike_workflow,
+                            new_data = test)
+bike_predictions["datetime"] <- test["datetime"]
+bike_predictions <- bike_predictions %>%
+  select(c(datetime, .pred)) %>%
+  mutate(.pred=exp(.pred))
+names(bike_predictions) <- c("datetime", "count")
+
+bike_predictions_data_frame <- data.frame(bike_predictions)
+bike_predictions_data_frame$count[bike_predictions_data_frame$count < 0] <- 0
+bike_predictions_data_frame$count[is.na(bike_predictions_data_frame$count)] <- 0
+bike_predictions_data_frame
+
+write.csv(bike_predictions_data_frame, "./STAT\ 348/KaggleBikeShare/tuning_predictions.csv", row.names = F)
